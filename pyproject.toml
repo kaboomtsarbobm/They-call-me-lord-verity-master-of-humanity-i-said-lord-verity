@@ -1,5 +1,11 @@
 [project]
-name = "poopymayonaise-achievements"
-version = "0.1.0"
-description = "collect my achievements"
-requires-python = ">=3.12"
+name = "Veritys_Achievements"
+version = "0.2.0"
+
+description = "We are verity together"
+license = "MIT"  # replace with your own license
+license-files = ["LICENSE"]
+authors = [
+    { name = "randomdex", email = "randomdex3@gmail.com" },
+]
+readme = "README.md"
