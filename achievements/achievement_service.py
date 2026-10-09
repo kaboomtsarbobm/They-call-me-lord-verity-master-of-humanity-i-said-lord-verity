@@ -24,7 +24,12 @@ async def get_currency_name():
     return "currency"
 
 
-async def check_achievements(player, interaction):
+async def check_achievements(
+    player,
+    interaction=None,
+    bot=None,
+    channel=None,
+):
     currency_name = await get_currency_name()
     achievements = await sync_to_async(list)(
         Achievement.objects.filter(
