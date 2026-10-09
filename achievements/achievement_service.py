@@ -130,11 +130,20 @@ async def check_achievements(
 
         reward_message = "\n".join(reward_text)
 
+        if interaction:        
+            reward_message = "\n".join(reward_text)
+
+        message = (
+            f"**ACHIEVEMENT COMPLETE**\n\n"
+            f"**{achievement.title}**\n\n"
+            f"**Rewards Given:**\n"
+            f"{reward_message or 'No reward configured.'}"
+        )
+
         if interaction:
             await interaction.followup.send(
-                f"**ACHIEVEMENT COMPLETE**\n\n"
-                f"**{achievement.title}**\n\n"
-                f"**Rewards Given:**\n"
-                f"{reward_message or 'No reward configured.'}",
+                message,
                 ephemeral=True,
             )
+        elif channel:
+            await channel.send(message)
