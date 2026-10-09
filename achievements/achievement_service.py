@@ -132,9 +132,9 @@ async def check_achievements(
 
         if interaction:
             await interaction.followup.send(
-                f"**FREE SURVEY COMPLETE**\n\n"
+                f"**ACHIEVEMENT COMPLETE**\n\n"
                 f"**{achievement.title}**\n\n"
-                f"**Random Shit Given:**\n"
+                f"**Rewards Given:**\n"
                 f"{reward_message or 'No reward configured.'}",
                 ephemeral=True,
             )
