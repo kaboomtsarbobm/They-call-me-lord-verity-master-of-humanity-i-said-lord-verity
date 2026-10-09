@@ -1,0 +1,5 @@
+[project]
+name = "poopymayonaise-achievements"
+version = "0.1.0"
+description = "collect my achievements"
+requires-python = ">=3.12"
