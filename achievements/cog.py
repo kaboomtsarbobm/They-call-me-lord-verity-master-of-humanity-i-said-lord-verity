@@ -137,11 +137,21 @@ class AchievementCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @commands.Cog.listener()
     async def on_ballsdex_ball_caught(self, event):
         """Check achievement progress after BallsDex reports a successful catch."""
         from .achievement_service import check_achievements
 
-        await check_achievements(event.player, None)
+        spawn_view = getattr(event, "view", None)
+        spawn_message = getattr(spawn_view, "message", None)
+        channel = getattr(spawn_message, "channel", None)
+
+        await check_achievements(
+            event.player,
+            None,
+            self.bot,
+            channel,
+        )
 
     async def _currency_name(self):
         """Read the currency label configured in BallsDex's settings."""
