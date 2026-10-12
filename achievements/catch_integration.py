@@ -1,140 +1,87 @@
-from __future__ import annotations
+"""Catch integration for Verity Achievements.
+
+Captures the real catch-modal interaction using a ContextVar, then checks
+achievements after the original catch method succeeds. No core BallsDex files
+or existing catch messages need to be modified.
+"""
 
 import logging
-
-from asgiref.sync import sync_to_async
-
-from bd_models.models import BallInstance, Player
-from .models import Achievement, AchievementCompletion
+from contextvars import ContextVar
+from functools import wraps
 
 log = logging.getLogger("ballsdex.packages.achievements")
 
-
-async def get_currency_name():
-    """Return the currency name configured in BallsDex settings."""
-    try:
-        from django.apps import apps
-
-        for model in apps.get_models():
-            field_names = {field.name for field in model._meta.get_fields()}
-            if "currency_name" not in field_names:
-                continue
-            settings = await sync_to_async(model.objects.first)()
-            if settings:
-                name = getattr(settings, "currency_name", None)
-                if name:
-                    return str(name)
-    except (ImportError, AttributeError, RuntimeError):
-        pass
-    return "currency"
+# The interaction is set by CountryballNamePrompt.on_submit and is available
+# while that callback awaits BallSpawnView.catch_ball.
+_current_catch_interaction: ContextVar[object | None] = ContextVar(
+    "verity_current_catch_interaction", default=None
+)
 
 
-async def check_achievements(player, interaction=None):
-    """Check and grant achievements; completion notices are ephemeral when possible."""
-    currency_name = await get_currency_name()
-    achievements = await sync_to_async(list)(
-        Achievement.objects.filter(enabled=True).prefetch_related(
-            "required_balls", "rewards__ball"
-        )
+def install_catch_integration(bot) -> None:
+    from ballsdex.packages.countryballs.countryball import (
+        BallSpawnView,
+        CountryballNamePrompt,
     )
 
-    for achievement in achievements:
-        already_completed = await AchievementCompletion.objects.filter(
-            achievement=achievement,
-            discord_id=player.discord_id,
-        ).aexists()
+    # Wrap the modal callback so the real Discord interaction is available to
+    # the catch method, without changing countryball.py.
+    original_on_submit = CountryballNamePrompt.on_submit
+    if not getattr(original_on_submit, "_verity_interaction_wrapped", False):
 
-        if already_completed:
-            continue
+        @wraps(original_on_submit)
+        async def on_submit_with_interaction(self, interaction, *args, **kwargs):
+            token = _current_catch_interaction.set(interaction)
+            try:
+                return await original_on_submit(self, interaction, *args, **kwargs)
+            finally:
+                _current_catch_interaction.reset(token)
 
-        complete = False
+        on_submit_with_interaction._verity_interaction_wrapped = True
+        CountryballNamePrompt.on_submit = on_submit_with_interaction
 
-        if achievement.requirement_type == "manual":
-            complete = True
+    current = BallSpawnView.catch_ball
+    if getattr(current, "_verity_achievements_wrapped", False):
+        log.debug("Verity Achievements catch integration is already installed")
+        return
 
-        elif achievement.requirement_type == "catch_balls":
-            count = await BallInstance.objects.filter(player=player).acount()
-            complete = count >= achievement.requirement_amount
+    original_catch_ball = current
 
-        elif achievement.requirement_type == "specific_balls":
-            required_balls = await sync_to_async(list)(
-                achievement.required_balls.all()
-            )
-            complete = True
-            for ball in required_balls:
-                if not await BallInstance.objects.filter(
-                    player=player, ball=ball
-                ).aexists():
-                    complete = False
-                    break
-
-        elif achievement.requirement_type == "unique_balls":
-            count = await BallInstance.objects.filter(
-                player=player
-            ).values("ball").distinct().acount()
-            complete = count >= achievement.requirement_amount
-
-        elif achievement.requirement_type == "catch_special":
-            count = await BallInstance.objects.filter(
-                player=player, special__isnull=False
-            ).acount()
-            complete = count >= achievement.requirement_amount
-
-        if not complete:
-            continue
-
-        rewards = await sync_to_async(list)(
-            achievement.rewards.select_related("ball").all()
+    @wraps(original_catch_ball)
+    async def catch_ball_with_achievements(
+        self, user, *, player=None, guild=None
+    ):
+        result = await original_catch_ball(
+            self, user, player=player, guild=guild
         )
-        reward_text = []
-
-        # Preserve existing reward behavior.
-        for reward in rewards:
-            if reward.reward_type in ("currency", "both") and reward.currency_amount:
-                await player.add_money(reward.currency_amount)
-                reward_text.append(f"{reward.currency_amount} {currency_name}")
-
-            if reward.reward_type in ("ball", "both") and reward.ball:
-                for _ in range(reward.ball_amount):
-                    await BallInstance.objects.acreate(
-                        ball=reward.ball,
-                        player=player,
-                        attack_bonus=0,
-                        health_bonus=0,
-                    )
-                reward_text.append(f"{reward.ball} x{reward.ball_amount}")
-
-        # Record completion before attempting delivery so a Discord notification
-        # failure cannot cause rewards to be granted again on the next catch.
-        await AchievementCompletion.objects.acreate(
-            achievement=achievement,
-            discord_id=player.discord_id,
-        )
-
-        reward_message = "\n".join(reward_text)
-        notification = (
-            f"**Achievement Complete!**\n\n"
-            f"**{achievement.title}**\n\n"
-            f"**Rewards Given:**\n"
-            f"{reward_message or 'No reward configured.'}"
-        )
-
-        if interaction is None:
-            log.warning(
-                "Achievement '%s' completed for user %s, but no Discord "
-                "interaction was available for an ephemeral notification.",
-                achievement.title,
-                player.discord_id,
-            )
-            continue
 
         try:
-            # The catch modal has already deferred its interaction, so use a
-            # private follow-up visible only to the player who caught the ball.
-            await interaction.followup.send(notification, ephemeral=True)
-        except Exception:
-            log.exception(
-                "Could not send ephemeral completion notice for achievement '%s'",
-                achievement.title,
-            )
+            from bd_models.models import Player
+            from .achievement_service import check_achievements
 
+            achievement_player = player
+            if achievement_player is None:
+                achievement_player, _ = await Player.objects.aget_or_create(
+                    discord_id=user.id
+                )
+
+            interaction = _current_catch_interaction.get()
+            if interaction is not None and getattr(interaction, "user", None):
+                # Do not accidentally send an interaction's private notification
+                # to a different player.
+                if interaction.user.id != user.id:
+                    interaction = None
+
+            await check_achievements(
+                achievement_player,
+                interaction=interaction,
+            )
+        except Exception:
+            # An achievement failure must never undo or break a successful catch.
+            log.exception("Failed to check Verity Achievements after a catch")
+
+        return result
+
+    catch_ball_with_achievements._verity_achievements_wrapped = True
+    BallSpawnView.catch_ball = catch_ball_with_achievements
+    log.info("Verity Achievements ephemeral catch integration installed")
