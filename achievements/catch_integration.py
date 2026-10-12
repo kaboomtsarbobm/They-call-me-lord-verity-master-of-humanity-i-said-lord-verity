@@ -9,7 +9,8 @@ implementation and its user-facing messages remain untouched.
 import logging
 from functools import wraps
 
-from ballsdex.packages.countryballs.countryball import BallSpawnView
+def install_catch_integration(bot) -> None:
+    from ballsdex.packages.countryballs.countryball import BallSpawnView
 
 log = logging.getLogger("ballsdex.packages.achievements")
 
