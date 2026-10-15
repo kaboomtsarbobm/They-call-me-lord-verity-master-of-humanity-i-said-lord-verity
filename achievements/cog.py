@@ -1,5 +1,4 @@
 import os
-import re
 from pathlib import Path
 
 from django.core.files.base import ContentFile
@@ -137,6 +136,192 @@ class AchievementPages(discord.ui.View):
                 pass
 
 
+class AchievementDetailsModal(discord.ui.Modal, title="Achievement details"):
+    title_input = discord.ui.TextInput(label="Achievement title", max_length=100)
+    caption_input = discord.ui.TextInput(label="Caption", style=discord.TextStyle.paragraph, required=False, max_length=2000)
+    amount_input = discord.ui.TextInput(label="Requirement amount", default="1", max_length=7)
+
+    def __init__(self, view):
+        super().__init__()
+        self.creator_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(str(self.amount_input.value))
+            if amount < 1:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("Requirement amount must be a positive number.", ephemeral=True)
+            return
+        self.creator_view.title_value = str(self.title_input.value).strip()
+        self.creator_view.caption_value = str(self.caption_input.value)
+        self.creator_view.requirement_amount = amount
+        await interaction.response.send_message("Achievement details saved.", ephemeral=True)
+
+
+class RewardAmountModal(discord.ui.Modal, title="Reward amounts"):
+    currency_amount = discord.ui.TextInput(label="Currency amount (0 if none)", default="0", max_length=9)
+    ball_amount = discord.ui.TextInput(label="Ball quantity (0 if none)", default="0", max_length=7)
+
+    def __init__(self, view):
+        super().__init__()
+        self.creator_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            currency = int(str(self.currency_amount.value))
+            quantity = int(str(self.ball_amount.value))
+            if currency < 0 or quantity < 0 or (currency == 0 and quantity == 0):
+                raise ValueError
+            if quantity and self.creator_view.reward_ball is None:
+                await interaction.response.send_message("Select a reward ball before setting a ball quantity.", ephemeral=True)
+                return
+        except ValueError:
+            await interaction.response.send_message("Enter non-negative amounts, and make at least one reward amount greater than zero.", ephemeral=True)
+            return
+        if currency and quantity:
+            kind = "both"
+        elif currency:
+            kind = "currency"
+        else:
+            kind = "ball"
+        self.creator_view.rewards.append((kind, currency, self.creator_view.reward_ball if quantity else None, quantity or 1))
+        await interaction.response.send_message(f"Reward added. Total rewards: {len(self.creator_view.rewards)}.", ephemeral=True)
+
+
+class RequirementSelect(discord.ui.Select):
+    def __init__(self, parent):
+        self.parent_view = parent
+        options = [
+            discord.SelectOption(label="Manual", value="manual"),
+            discord.SelectOption(label="Catch a number of balls", value="catch_balls"),
+            discord.SelectOption(label="Own specific balls", value="specific_balls"),
+            discord.SelectOption(label="Catch unique balls", value="unique_balls"),
+            discord.SelectOption(label="Catch special balls", value="catch_special"),
+        ]
+        super().__init__(placeholder="Choose requirement type", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.requirement_type = self.values[0]
+        await interaction.response.edit_message(content=self.parent_view.summary(), view=self.parent_view)
+
+
+class RequiredBallsSelect(discord.ui.Select):
+    def __init__(self, parent, balls):
+        self.parent_view = parent
+        self.ball_lookup = {str(ball.pk): ball for ball in balls}
+        options = [discord.SelectOption(label=str(getattr(ball, "country", ball))[:100], value=str(ball.pk)) for ball in balls[:25]]
+        if not options:
+            options = [discord.SelectOption(label="No configured balls found", value="none", default=True)]
+            disabled = True
+        else:
+            disabled = False
+        super().__init__(placeholder="Choose required balls (up to 25 shown)", min_values=0, max_values=len(options), options=options, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.required_balls = [self.ball_lookup[v] for v in self.values if v in self.ball_lookup]
+        await interaction.response.edit_message(content=self.parent_view.summary(), view=self.parent_view)
+
+
+class RewardBallSelect(discord.ui.Select):
+    def __init__(self, parent, balls):
+        self.parent_view = parent
+        self.ball_lookup = {str(ball.pk): ball for ball in balls}
+        options = [discord.SelectOption(label=str(getattr(ball, "country", ball))[:100], value=str(ball.pk)) for ball in balls[:25]]
+        if not options:
+            options = [discord.SelectOption(label="No configured balls found", value="none", default=True)]
+        super().__init__(placeholder="Choose a ball to include in a reward", min_values=1, max_values=1, options=options, disabled=not bool(self.ball_lookup))
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.reward_ball = self.ball_lookup.get(self.values[0])
+        await interaction.response.edit_message(content=self.parent_view.summary(), view=self.parent_view)
+
+
+class AchievementCreatorView(discord.ui.View):
+    def __init__(self, cog, owner_id, balls):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.balls = balls
+        self.requirement_type = "manual"
+        self.requirement_amount = 1
+        self.required_balls = []
+        self.reward_ball = None
+        self.rewards = []
+        self.title_value = None
+        self.caption_value = ""
+        self.image = None
+        self.enabled = True
+        self.add_item(RequirementSelect(self))
+        self.add_item(RequiredBallsSelect(self, balls))
+        self.add_item(RewardBallSelect(self, balls))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This achievement setup belongs to someone else.", ephemeral=True)
+            return False
+        return True
+
+    def summary(self):
+        req = ", ".join(str(getattr(b, "country", b)) for b in self.required_balls) or "None selected"
+        reward_lines = []
+        for kind, currency, ball, quantity in self.rewards:
+            bits = []
+            if currency:
+                bits.append(f"{currency} currency")
+            if ball:
+                bits.append(f"{getattr(ball, 'country', ball)} x{quantity}")
+            reward_lines.append(" + ".join(bits))
+        rewards = "\n".join(reward_lines) if reward_lines else "No rewards added yet"
+        title = self.title_value or "Not set"
+        return f"Configure the achievement using the menus below.\n**Title:** {title}\n**Requirement:** {self.requirement_type} (amount {self.requirement_amount})\n**Required balls:** {req}\n**Rewards:**\n{rewards}"
+
+    @discord.ui.button(label="Set title and details", style=discord.ButtonStyle.primary, row=3)
+    async def details_button(self, interaction, button):
+        await interaction.response.send_modal(AchievementDetailsModal(self))
+
+    @discord.ui.button(label="Add reward", style=discord.ButtonStyle.secondary, row=3)
+    async def add_reward_button(self, interaction, button):
+        await interaction.response.send_modal(RewardAmountModal(self))
+
+    @discord.ui.button(label="Toggle enabled", style=discord.ButtonStyle.secondary, row=3)
+    async def toggle_enabled_button(self, interaction, button):
+        self.enabled = not self.enabled
+        await interaction.response.edit_message(content=self.summary() + f"\n**Enabled:** {self.enabled}", view=self)
+
+    @discord.ui.button(label="Create achievement", style=discord.ButtonStyle.success, row=4)
+    async def create_button(self, interaction, button):
+        from .models import Achievement, AchievementReward
+        if not self.title_value:
+            await interaction.response.send_message("Set the achievement title and details first.", ephemeral=True)
+            return
+        if self.requirement_type == "specific_balls" and not self.required_balls:
+            await interaction.response.send_message("For the specific-balls requirement, provide at least one required ball.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        achievement = await Achievement.objects.acreate(
+            title=self.title_value[:100], caption=self.caption_value, enabled=self.enabled,
+            requirement_type=self.requirement_type, requirement_amount=self.requirement_amount,
+        )
+        if self.required_balls:
+            await achievement.required_balls.aset(self.required_balls)
+        for kind, currency, ball, quantity in self.rewards:
+            await AchievementReward.objects.acreate(
+                achievement=achievement, reward_type=kind, currency_amount=currency,
+                ball=ball, ball_amount=quantity,
+            )
+        await interaction.followup.send(
+            f"Achievement created: **{achievement.title}** (ID {achievement.pk}). Configured {len(self.rewards)} reward(s).",
+            ephemeral=True,
+        )
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+
 class AchievementCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -213,151 +398,18 @@ class AchievementCog(commands.Cog):
         name="imtotallynotaddingachievements",
         description="Create an achievement using the admin-panel permissions.",
     )
-    @app_commands.describe(
-        title="Achievement title",
-        caption="Description shown to players",
-        requirement_type="How players complete it",
-        requirement_amount="Number required for the chosen requirement",
-        required_ball_ids="Comma-separated Ball database IDs for specific_balls",
-        image="Optional achievement image",
-        enabled="Whether the achievement is active",
-        rewards="Semicolon-separated rewards: currency:100; ball:BALL_ID:2; both:100:BALL_ID:2",
-    )
-    @app_commands.choices(requirement_type=[
-        app_commands.Choice(name="Manual", value="manual"),
-        app_commands.Choice(name="Catch a number of balls", value="catch_balls"),
-        app_commands.Choice(name="Own specific balls", value="specific_balls"),
-        app_commands.Choice(name="Catch unique balls", value="unique_balls"),
-        app_commands.Choice(name="Catch special balls", value="catch_special"),
-    ])
-    async def imtotallynotaddingachievements(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        caption: str,
-        requirement_type: app_commands.Choice[str],
-        requirement_amount: app_commands.Range[int, 1, 1000000] = 1,
-        required_ball_ids: str = "",
-        image: discord.Attachment | None = None,
-        enabled: bool = True,
-        rewards: str = "",
-    ):
+    async def imtotallynotaddingachievements(self, interaction: discord.Interaction):
         if not await self._can_create_achievements(interaction):
             await interaction.response.send_message(
                 "You do not have permission to create achievements. Ask a bot administrator to grant the achievements add permission in the admin panel.",
                 ephemeral=True,
             )
             return
-
         from bd_models.models import Ball
-        from .models import Achievement, AchievementReward
-
-        title = title.strip()
-        if not title:
-            await interaction.response.send_message("The achievement title cannot be empty.", ephemeral=True)
-            return
-
-        ball_ids: list[int] = []
-        if required_ball_ids.strip():
-            try:
-                ball_ids = [int(value.strip()) for value in required_ball_ids.split(",") if value.strip()]
-            except ValueError:
-                await interaction.response.send_message(
-                    "Required ball IDs must be comma-separated database IDs, such as 12,34.", ephemeral=True
-                )
-                return
-
-        if requirement_type.value == "specific_balls" and not ball_ids:
-            await interaction.response.send_message(
-                "For the specific-balls requirement, provide at least one required ball ID.", ephemeral=True
-            )
-            return
-
-        parsed_rewards: list[tuple[str, int, int | None, int]] = []
-        for item in filter(None, (part.strip() for part in rewards.split(";"))):
-            parts = [part.strip() for part in item.split(":")]
-            try:
-                kind = parts[0].lower()
-                if kind == "currency" and len(parts) == 2:
-                    amount = int(parts[1])
-                    if amount < 0:
-                        raise ValueError
-                    parsed_rewards.append(("currency", amount, None, 1))
-                elif kind == "ball" and len(parts) == 3:
-                    ball_id, amount = int(parts[1]), int(parts[2])
-                    if amount < 1:
-                        raise ValueError
-                    parsed_rewards.append(("ball", 0, ball_id, amount))
-                elif kind == "both" and len(parts) == 4:
-                    currency_amount, ball_id, amount = int(parts[1]), int(parts[2]), int(parts[3])
-                    if currency_amount < 0 or amount < 1:
-                        raise ValueError
-                    parsed_rewards.append(("both", currency_amount, ball_id, amount))
-                else:
-                    raise ValueError
-            except ValueError:
-                await interaction.response.send_message(
-                    "Invalid rewards format. Use currency:100; ball:BALL_ID:2; both:100:BALL_ID:2. Separate multiple rewards with semicolons.",
-                    ephemeral=True,
-                )
-                return
-
-        all_ball_ids = set(ball_ids)
-        all_ball_ids.update(ball_id for _, _, ball_id, _ in parsed_rewards if ball_id is not None)
-        balls = await sync_to_async(list)(Ball.objects.filter(pk__in=all_ball_ids)) if all_ball_ids else []
-        balls_by_id = {ball.pk: ball for ball in balls}
-        missing = sorted(all_ball_ids - set(balls_by_id))
-        if missing:
-            await interaction.response.send_message(
-                f"These Ball database IDs do not exist: {', '.join(map(str, missing))}.", ephemeral=True
-            )
-            return
-
-        if image is not None and not image.content_type.startswith("image/"):
-            await interaction.response.send_message("The uploaded attachment must be an image.", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        achievement = await Achievement.objects.acreate(
-            title=title[:100],
-            caption=caption,
-            enabled=enabled,
-            requirement_type=requirement_type.value,
-            requirement_amount=requirement_amount,
-        )
-        if ball_ids:
-            await achievement.required_balls.aset([balls_by_id[ball_id] for ball_id in ball_ids])
-
-        if image is not None:
-            try:
-                image_bytes = await image.read()
-                suffix = Path(image.filename or "achievement.png").suffix.lower()
-                if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-                    suffix = ".png"
-                await sync_to_async(achievement.image.save)(
-                    f"achievement_{achievement.pk}{suffix}", ContentFile(image_bytes), save=True
-                )
-            except Exception:
-                await achievement.adelete()
-                await interaction.followup.send(
-                    "I couldn't save that image, so the achievement was not created. Please try again with a standard image file.",
-                    ephemeral=True,
-                )
-                return
-
-        for kind, currency_amount, ball_id, ball_amount in parsed_rewards:
-            await AchievementReward.objects.acreate(
-                achievement=achievement,
-                reward_type=kind,
-                currency_amount=currency_amount,
-                ball=balls_by_id.get(ball_id) if ball_id is not None else None,
-                ball_amount=ball_amount,
-            )
-
-        await interaction.followup.send(
-            f"Achievement created: **{achievement.title}** (ID {achievement.pk}). "
-            f"Configured {len(parsed_rewards)} reward(s).",
-            ephemeral=True,
+        balls = await sync_to_async(list)(Ball.objects.all().order_by("country"))
+        view = AchievementCreatorView(self, interaction.user.id, balls)
+        await interaction.response.send_message(
+            "Configure the achievement using the menus below.", view=view, ephemeral=True
         )
 
     @app_commands.command(
