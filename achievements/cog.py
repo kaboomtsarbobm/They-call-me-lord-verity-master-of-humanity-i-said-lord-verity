@@ -176,7 +176,8 @@ class AchievementCog(commands.Cog):
             "https://tenor.com/view/you-are-an-idiot-gif-17637615161490421290 "
             "https://www.youtube.com/watch?v=hiRacdl02w4 "
             "https://www.youtube.com/watch?v=rYDbgQGtBF8 "
-            "https://www.youtube.com/watch?v=48rz8udZBmQ"
+            "https://www.youtube.com/watch?v=48rz8udZBmQ",
+            ephemeral=True,
         )
 
     @app_commands.command(
@@ -228,3 +229,4 @@ class AchievementCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(AchievementCog(bot))
+
