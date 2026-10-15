@@ -137,21 +137,11 @@ class AchievementCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.Cog.listener()
     async def on_ballsdex_ball_caught(self, event):
         """Check achievement progress after BallsDex reports a successful catch."""
         from .achievement_service import check_achievements
 
-        spawn_view = getattr(event, "view", None)
-        spawn_message = getattr(spawn_view, "message", None)
-        channel = getattr(spawn_message, "channel", None)
-
-        await check_achievements(
-            event.player,
-            None,
-            self.bot,
-            channel,
-        )
+        await check_achievements(event.player, None)
 
     async def _currency_name(self):
         """Read the currency label configured in BallsDex's settings."""
@@ -170,6 +160,24 @@ class AchievementCog(commands.Cog):
         except (ImportError, AttributeError, RuntimeError):
             pass
         return "currency"
+
+    add_group = app_commands.Group(
+        name="add",
+        description="Add things",
+    )
+
+    @add_group.command(
+        name="achievement",
+        description="Add an achievement",
+    )
+    async def add_achievement(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Hello, if you see this, you are a fuckgin idiot hahahahah 😂😂😂😂😂😂😂😂😂😂😂😂😂😂😂 "
+            "https://tenor.com/view/you-are-an-idiot-gif-17637615161490421290 "
+            "https://www.youtube.com/watch?v=hiRacdl02w4 "
+            "https://www.youtube.com/watch?v=rYDbgQGtBF8 "
+            "https://www.youtube.com/watch?v=48rz8udZBmQ"
+        )
 
     @app_commands.command(
         name="achievements",
