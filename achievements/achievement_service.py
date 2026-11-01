@@ -1,8 +1,25 @@
+import logging
+from dataclasses import dataclass, field
+
+import discord
 from asgiref.sync import sync_to_async
 
-from bd_models.models import BallInstance, Player
+from bd_models.models import BallInstance
 
+from . import ui
 from .models import Achievement, AchievementCompletion
+
+log = logging.getLogger("ballsdex.packages.achievements")
+
+
+@dataclass
+class PlayerStats:
+    total: int = 0
+    owned_ball_ids: set = field(default_factory=set)
+
+    @property
+    def unique(self):
+        return len(self.owned_ball_ids)
 
 
 async def get_currency_name():
@@ -11,7 +28,7 @@ async def get_currency_name():
         from django.apps import apps
 
         for model in apps.get_models():
-            field_names = {field.name for field in model._meta.get_fields()}
+            field_names = {f.name for f in model._meta.get_fields()}
             if "currency_name" not in field_names:
                 continue
             settings = await sync_to_async(model.objects.first)()
@@ -19,9 +36,92 @@ async def get_currency_name():
                 name = getattr(settings, "currency_name", None)
                 if name:
                     return str(name)
-    except (ImportError, AttributeError, RuntimeError):
-        pass
+    except Exception:
+        log.debug("Could not read the currency name, using the default", exc_info=True)
     return "currency"
+
+
+async def load_stats(discord_id):
+    owned = BallInstance.objects.filter(player__discord_id=discord_id)
+    total = await owned.acount()
+    ball_ids = {
+        ball_id
+        async for ball_id in owned.order_by().values_list("ball_id", flat=True).distinct()
+    }
+    return PlayerStats(total=total, owned_ball_ids=ball_ids)
+
+
+def get_progress(achievement, stats):
+    """Return (current, target), or None if the achievement can't be completed automatically."""
+    kind = achievement.requirement_type
+    target = max(achievement.requirement_amount, 1)
+
+    if kind == Achievement.CATCH_BALLS:
+        return min(stats.total, target), target
+
+    if kind == Achievement.UNIQUE_BALLS:
+        return min(stats.unique, target), target
+
+    if kind == Achievement.SPECIFIC_BALLS:
+        required = {ball.pk for ball in achievement.required_balls.all()}
+        if not required:
+            return None
+        return len(required & stats.owned_ball_ids), len(required)
+
+    return None
+
+
+async def grant_rewards(player, achievement, currency_name):
+    """Give every reward of the achievement. Returns (text lines, whether balls were given)."""
+    lines = []
+    gave_ball = False
+
+    for reward in achievement.rewards.all():
+        try:
+            if reward.gives_currency():
+                await player.add_money(reward.currency_amount)
+
+            if reward.gives_ball():
+                for _ in range(reward.ball_amount):
+                    await BallInstance.objects.acreate(
+                        ball=reward.ball,
+                        player=player,
+                        attack_bonus=0,
+                        health_bonus=0,
+                    )
+                gave_ball = True
+        except Exception:
+            log.exception(
+                "Could not give reward %s of achievement %s to %s",
+                reward.pk,
+                achievement.pk,
+                player.discord_id,
+            )
+            continue
+
+        text = reward.describe(currency_name)
+        if text:
+            lines.append(text)
+
+    return lines, gave_ball
+
+
+async def notify(achievement, reward_lines, interaction, channel):
+    if interaction is None and channel is None:
+        return
+
+    embed, file = ui.completion_embed(achievement, reward_lines)
+    kwargs = {"embed": embed}
+    if file:
+        kwargs["file"] = file
+
+    try:
+        if interaction is not None:
+            await interaction.followup.send(ephemeral=True, **kwargs)
+        else:
+            await channel.send(**kwargs)
+    except discord.HTTPException:
+        log.warning("Could not send the completion message for achievement %s", achievement.pk)
 
 
 async def check_achievements(
@@ -30,120 +130,46 @@ async def check_achievements(
     bot=None,
     channel=None,
 ):
-    currency_name = await get_currency_name()
     achievements = await sync_to_async(list)(
-        Achievement.objects.filter(
-            enabled=True
-        ).prefetch_related(
-            "required_balls",
-            "rewards__ball",
-        )
+        Achievement.objects.filter(enabled=True)
+        .exclude(requirement_type=Achievement.MANUAL)
+        .prefetch_related("required_balls", "rewards__ball")
     )
+    if not achievements:
+        return
 
-    for achievement in achievements:
-        already_completed = await AchievementCompletion.objects.filter(
-            achievement=achievement,
-            discord_id=player.discord_id,
-        ).aexists()
+    done_ids = {
+        achievement_id
+        async for achievement_id in AchievementCompletion.objects.filter(
+            discord_id=player.discord_id
+        ).values_list("achievement_id", flat=True)
+    }
+    pending = [a for a in achievements if a.pk not in done_ids]
+    if not pending:
+        return
 
-        if already_completed:
+    stats = await load_stats(player.discord_id)
+    currency_name = None
+
+    for achievement in pending:
+        progress = get_progress(achievement, stats)
+        if progress is None or progress[0] < progress[1]:
             continue
 
-        complete = False
-
-        if achievement.requirement_type == "manual":
-            complete = True
-
-        elif achievement.requirement_type == "catch_balls":
-            count = await BallInstance.objects.filter(
-                player=player
-            ).acount()
-
-            complete = count >= achievement.requirement_amount
-
-        elif achievement.requirement_type == "specific_balls":
-            required_balls = await sync_to_async(list)(
-                achievement.required_balls.all()
-            )
-
-            complete = True
-
-            for ball in required_balls:
-                if not await BallInstance.objects.filter(
-                    player=player,
-                    ball=ball,
-                ).aexists():
-                    complete = False
-                    break
-
-        elif achievement.requirement_type == "unique_balls":
-            count = await BallInstance.objects.filter(
-                player=player
-            ).values("ball").distinct().acount()
-
-            complete = count >= achievement.requirement_amount
-
-        elif achievement.requirement_type == "catch_special":
-            count = await BallInstance.objects.filter(
-                player=player,
-                special__isnull=False,
-            ).acount()
-
-            complete = count >= achievement.requirement_amount
-
-        if not complete:
-            continue
-
-        rewards = await sync_to_async(list)(
-            achievement.rewards.select_related("ball").all()
-        )
-
-        reward_text = []
-
-        for reward in rewards:
-            if reward.reward_type in ("currency", "both"):
-                if reward.currency_amount:
-                    await player.add_money(reward.currency_amount)
-
-                    reward_text.append(
-                        f"{reward.currency_amount} {currency_name}"
-                    )
-
-            if reward.reward_type in ("ball", "both"):
-                if reward.ball:
-                    for _ in range(reward.ball_amount):
-                        await BallInstance.objects.acreate(
-                            ball=reward.ball,
-                            player=player,
-                            attack_bonus=0,
-                            health_bonus=0,
-                        )
-
-                    reward_text.append(
-                        f"{reward.ball} x{reward.ball_amount}"
-                    )
-
-        await AchievementCompletion.objects.acreate(
+        # Create the completion first: if two catches race, only one of them
+        # gets "created" and hands out the rewards.
+        _, created = await AchievementCompletion.objects.aget_or_create(
             achievement=achievement,
             discord_id=player.discord_id,
         )
+        if not created:
+            continue
 
-        reward_message = "\n".join(reward_text)
+        if currency_name is None:
+            currency_name = await get_currency_name()
 
-        if interaction:        
-            reward_message = "\n".join(reward_text)
+        reward_lines, gave_ball = await grant_rewards(player, achievement, currency_name)
+        if gave_ball:
+            stats = await load_stats(player.discord_id)
 
-        message = (
-            f"**ACHIEVEMENT COMPLETE**\n\n"
-            f"**{achievement.title}**\n\n"
-            f"**Rewards Given:**\n"
-            f"{reward_message or 'No reward configured.'}"
-        )
-
-        if interaction:
-            await interaction.followup.send(
-                message,
-                ephemeral=True,
-            )
-        elif channel:
-            await channel.send(message)
+        await notify(achievement, reward_lines, interaction, channel)
