@@ -42,9 +42,9 @@ class AchievementAdmin(ModelAdmin):
             {
                 "fields": ("requirement_type", "requirement_amount", "required_balls"),
                 "description": (
-                    "Manual: you give it to them yay (wip)"
-                    "Catch balls/ different balls: self explanatory"
-                    "Catch specific balls: catch my objects"
+                    "Manual: Hi my name is Carmen Winstead (wip) "
+                    "Catch balls / catch different balls: well what do you think you do genius "
+                    "Catch specific balls: the player needs the amount of EACH ball picked below (amount 1 = just own each one)."
                 ),
             },
         ),
