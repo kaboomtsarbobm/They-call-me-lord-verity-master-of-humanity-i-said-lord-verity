@@ -53,8 +53,15 @@ class Achievement(models.Model):
         if self.requirement_type == self.UNIQUE_BALLS:
             return f"Catch {_plural(self.requirement_amount, 'different ball')}"
         if self.requirement_type == self.SPECIFIC_BALLS:
-            names = ", ".join(str(ball) for ball in self.required_balls.all())
-            return f"Catch: {names}" if names else "Catch specific balls (none selected)"
+            balls = [str(ball) for ball in self.required_balls.all()]
+            if not balls:
+                return "Catch specific balls (none selected)"
+            amount = max(self.requirement_amount, 1)
+            if amount == 1:
+                return f"Catch: {', '.join(balls)}"
+            if len(balls) == 1:
+                return f"Catch {amount} {balls[0]}"
+            return f"Catch {amount} of each: {', '.join(balls)}"
         return "Awarded manually"
 
 
@@ -94,9 +101,9 @@ class AchievementReward(models.Model):
 
     def clean(self):
         if not self.currency_amount and not self.ball_id:
-            raise ValidationError("Set a currency amount, choose a ball, or set it as both dumbass")
+            raise ValidationError("https://tenor.com/view/zerobyte-verity-lord-verity-verity-no-horror-skunkz-gif-2299235693456751732")
         if self.ball_id and self.ball_amount < 1:
-            raise ValidationError({"ball_amount": "1."})
+            raise ValidationError({"https://tenor.com/view/zerobyte-verity-lord-verity-verity-no-horror-skunkz-gif-2299235693456751732"})
 
     def save(self, *args, **kwargs):
         # The admin no longer asks for a reward type: it follows what was filled in.
