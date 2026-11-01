@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 import discord
 from asgiref.sync import sync_to_async
+from django.db.models import Count
 
 from bd_models.models import BallInstance
 
@@ -15,11 +16,11 @@ log = logging.getLogger("ballsdex.packages.achievements")
 @dataclass
 class PlayerStats:
     total: int = 0
-    owned_ball_ids: set = field(default_factory=set)
+    ball_counts: dict = field(default_factory=dict)  # ball id -> how many copies the player owns
 
     @property
     def unique(self):
-        return len(self.owned_ball_ids)
+        return len(self.ball_counts)
 
 
 async def get_currency_name():
@@ -43,12 +44,9 @@ async def get_currency_name():
 
 async def load_stats(discord_id):
     owned = BallInstance.objects.filter(player__discord_id=discord_id)
-    total = await owned.acount()
-    ball_ids = {
-        ball_id
-        async for ball_id in owned.order_by().values_list("ball_id", flat=True).distinct()
-    }
-    return PlayerStats(total=total, owned_ball_ids=ball_ids)
+    rows = owned.order_by().values("ball_id").annotate(copies=Count("id"))
+    ball_counts = {row["ball_id"]: row["copies"] async for row in rows}
+    return PlayerStats(total=sum(ball_counts.values()), ball_counts=ball_counts)
 
 
 def get_progress(achievement, stats):
@@ -63,10 +61,12 @@ def get_progress(achievement, stats):
         return min(stats.unique, target), target
 
     if kind == Achievement.SPECIFIC_BALLS:
+        # The amount is how many copies of EACH selected ball the player needs.
         required = {ball.pk for ball in achievement.required_balls.all()}
         if not required:
             return None
-        return len(required & stats.owned_ball_ids), len(required)
+        have = sum(min(stats.ball_counts.get(pk, 0), target) for pk in required)
+        return have, target * len(required)
 
     return None
 
