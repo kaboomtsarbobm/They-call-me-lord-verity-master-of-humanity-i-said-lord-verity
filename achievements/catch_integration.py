@@ -48,27 +48,24 @@ def install_catch_integration(bot) -> None:
     original_catch_ball = current
 
     @wraps(original_catch_ball)
-    async def catch_ball_with_achievements(
-        self, user, *, player=None, guild=None
-    ):
-        result = await original_catch_ball(
-            self, user, player=player, guild=guild
-        )
+    async def catch_ball_with_achievements(self, user, *args, **kwargs):
+        result = await original_catch_ball(self, user, *args, **kwargs)
 
         try:
             from bd_models.models import Player
+
             from .achievement_service import check_achievements
 
-            achievement_player = player
+            achievement_player = kwargs.get("player")
             if achievement_player is None:
                 achievement_player, _ = await Player.objects.aget_or_create(
                     discord_id=user.id
                 )
 
             interaction = _current_catch_interaction.get()
+            # Do not accidentally send an interaction's private notification
+            # to a different player.
             if interaction is not None and getattr(interaction, "user", None):
-                # Do not accidentally send an interaction's private notification
-                # to a different player.
                 if interaction.user.id != user.id:
                     interaction = None
 
@@ -84,4 +81,4 @@ def install_catch_integration(bot) -> None:
 
     catch_ball_with_achievements._verity_achievements_wrapped = True
     BallSpawnView.catch_ball = catch_ball_with_achievements
-    log.info("Verity Achievements ephemeral catch integration installed")
+    log.info("Verity: Hey its me verity")
