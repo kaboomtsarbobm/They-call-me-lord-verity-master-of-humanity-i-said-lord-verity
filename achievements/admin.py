@@ -1,4 +1,7 @@
-from django.contrib import admin
+import logging
+
+from asgiref.sync import async_to_sync
+from django.contrib import admin, messages
 from django.db.models import Count
 from django.utils.html import format_html
 
@@ -7,7 +10,9 @@ try:
 except ImportError:
     from django.contrib.admin import ModelAdmin, TabularInline
 
-from .models import Achievement, AchievementReward
+from .models import Achievement, AchievementCompletion, AchievementReward
+
+log = logging.getLogger("ballsdex.packages.achievements")
 
 
 class AchievementRewardInline(TabularInline):
@@ -42,9 +47,12 @@ class AchievementAdmin(ModelAdmin):
             {
                 "fields": ("requirement_type", "requirement_amount", "required_balls"),
                 "description": (
-                    "Manual: Hi my name is Carmen Winstead (wip) "
-                    "Catch balls / catch different balls: well what do you think you do genius "
-                    "Catch specific balls: the player needs the amount of EACH ball picked below (amount 1 = just own each one)."
+                    "The amount is how many for most types. "
+                    "Dex percent: 1 to 100. Attack, health and combined bonus: the minimum bonus. "
+                    "Bad bonus: how far below zero. Fast catch: at most this many seconds after the spawn. "
+                    "Slow catch: at least this many seconds after the spawn. Wrong guesses: how many times. "
+                    "Specific balls: how many of each ball picked below (1 means just own each one). "
+                    "Manual never completes by itself, give it from Achievement completions."
                 ),
             },
         ),
@@ -92,3 +100,45 @@ class AchievementAdmin(ModelAdmin):
             url,
             size,
         )
+
+
+@admin.register(AchievementCompletion)
+class AchievementCompletionAdmin(ModelAdmin):
+    list_display = ("discord_id", "achievement", "completed_at")
+    list_filter = ("achievement",)
+    search_fields = ("discord_id",)
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": ("achievement", "discord_id"),
+                "description": (
+                    "Adding a completion gives that player the achievement and its rewards. "
+                    "Deleting one lets the player earn the achievement again."
+                ),
+            },
+        ),
+    )
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if change:
+            return
+
+        from .achievement_service import give_rewards, load_achievement
+
+        async def give():
+            achievement = await load_achievement(obj.achievement_id)
+            await give_rewards(obj.discord_id, achievement)
+
+        try:
+            async_to_sync(give)()
+        except Exception:
+            log.exception("Could not give the rewards for completion %s", obj.pk)
+            self.message_user(
+                request,
+                "The completion was saved but the rewards could not be given. Check the logs.",
+                messages.ERROR,
+            )
+        else:
+            self.message_user(request, f"Rewards given to {obj.discord_id}.", messages.SUCCESS)
