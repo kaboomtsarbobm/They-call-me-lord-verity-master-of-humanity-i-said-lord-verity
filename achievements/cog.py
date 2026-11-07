@@ -26,7 +26,7 @@ class AchievementPages(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                "https://tenor.com/view/verity-thatmob-something-is-knocking-at-your-door-something-is-inside-your-house-gif-3789302794565080054",
+                "https://www.youtube.com/watch?v=hiRacdl02w4",
                 ephemeral=True,
             )
             return False
@@ -56,29 +56,17 @@ class AchievementPages(discord.ui.View):
         )
 
     @discord.ui.button(label="Previous", emoji="◀️", style=discord.ButtonStyle.secondary)
-    async def previous_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.page > 0:
             self.page -= 1
         await self.show_page(interaction)
 
     @discord.ui.button(label="1/1", style=discord.ButtonStyle.secondary, disabled=True)
-    async def page_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
+    async def page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         pass
 
     @discord.ui.button(label="Next", emoji="▶️", style=discord.ButtonStyle.primary)
-    async def next_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.page < len(self.achievements) - 1:
             self.page += 1
         await self.show_page(interaction)
@@ -95,7 +83,6 @@ class AchievementPages(discord.ui.View):
 
 
 async def find_balls(names):
-    """Match ball names (case-insensitive). Returns (balls found, names not found)."""
     from bd_models.models import Ball
 
     found, missing = [], []
@@ -123,17 +110,17 @@ class AchievementDetailsModal(discord.ui.Modal, title="Achievement details"):
             if amount < 1:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206", ephemeral=True)
+            await interaction.response.send_message("Requirement amount must be a positive number.", ephemeral=True)
             return
         self.creator_view.title_value = str(self.title_input.value).strip()
         self.creator_view.caption_value = str(self.caption_input.value)
         self.creator_view.requirement_amount = amount
-        await interaction.response.send_message("Ok your bullshit is saved.", ephemeral=True)
+        await interaction.response.send_message("Achievement details saved.", ephemeral=True)
 
 
 class RequiredBallsModal(discord.ui.Modal, title="Required balls"):
     names_input = discord.ui.TextInput(
-        label="Ball names, one per line pwease uwu",
+        label="Ball names, one per line",
         style=discord.TextStyle.paragraph,
         max_length=1500,
     )
@@ -168,7 +155,7 @@ class RewardModal(discord.ui.Modal, title="Add reward"):
             if currency < 0 or quantity < 1:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206", ephemeral=True)
+            await interaction.response.send_message("Currency must be 0 or more and the ball quantity at least 1.", ephemeral=True)
             return
 
         ball = None
@@ -181,7 +168,7 @@ class RewardModal(discord.ui.Modal, title="Add reward"):
             ball = found[0]
 
         if not currency and ball is None:
-            await interaction.response.send_message("https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206", ephemeral=True)
+            await interaction.response.send_message("Add some currency, a ball, or both.", ephemeral=True)
             return
 
         if currency and ball:
@@ -195,15 +182,11 @@ class RewardModal(discord.ui.Modal, title="Add reward"):
 
 
 class RequirementSelect(discord.ui.Select):
-    def __init__(self, parent):
+    def __init__(self, parent, types, row):
         self.parent_view = parent
-        options = [
-            discord.SelectOption(label="Manual", value="manual"),
-            discord.SelectOption(label="Catch a number of balls", value="catch_balls"),
-            discord.SelectOption(label="Own specific balls", value="specific_balls"),
-            discord.SelectOption(label="Catch unique balls", value="unique_balls"),
-        ]
-        super().__init__(placeholder="Choose requirement type", min_values=1, max_values=1, options=options)
+        options = [discord.SelectOption(label=label, value=value) for value, label in types]
+        placeholder = "Choose requirement type" if row == 0 else "More requirement types"
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.requirement_type = self.values[0]
@@ -223,16 +206,23 @@ class AchievementCreatorView(discord.ui.View):
         self.title_value = None
         self.caption_value = ""
         self.enabled = True
-        self.add_item(RequirementSelect(self))
+        from .models import Achievement
+
+        types = list(Achievement.REQUIREMENT_TYPES)
+        for row, start in enumerate(range(0, len(types), 25)):
+            self.add_item(RequirementSelect(self, types[start:start + 25], row))
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206", ephemeral=True)
+            await interaction.response.send_message("This achievement setup belongs to someone else.", ephemeral=True)
             return False
         return True
 
     def summary(self):
-        req = ", ".join(str(ball) for ball in self.required_balls) or "https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206"
+        from .models import Achievement
+
+        labels = dict(Achievement.REQUIREMENT_TYPES)
+        req = ", ".join(str(ball) for ball in self.required_balls) or "None selected"
         reward_lines = []
         for kind, currency, ball, quantity in self.rewards:
             bits = []
@@ -246,49 +236,56 @@ class AchievementCreatorView(discord.ui.View):
         return (
             "Configure the achievement using the menu and buttons below.\n"
             f"**Title:** {title}\n"
-            f"**Requirement:** {self.requirement_type} (amount {self.requirement_amount})\n"
+            f"**Requirement:** {labels.get(self.requirement_type, self.requirement_type)} (amount {self.requirement_amount})\n"
             f"**Required balls:** {req}\n"
             f"**Enabled:** {self.enabled}\n"
             f"**Rewards:**\n{rewards}"
         )
 
-    @discord.ui.button(label="Set title and details", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Set title and details", style=discord.ButtonStyle.primary, row=2)
     async def details_button(self, interaction, button):
         await interaction.response.send_modal(AchievementDetailsModal(self))
 
-    @discord.ui.button(label="Required balls", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Required balls", style=discord.ButtonStyle.secondary, row=2)
     async def required_balls_button(self, interaction, button):
         await interaction.response.send_modal(RequiredBallsModal(self))
 
-    @discord.ui.button(label="Add reward", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Add reward", style=discord.ButtonStyle.secondary, row=2)
     async def add_reward_button(self, interaction, button):
         await interaction.response.send_modal(RewardModal(self))
 
-    @discord.ui.button(label="Toggle enabled", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Toggle enabled", style=discord.ButtonStyle.secondary, row=2)
     async def toggle_enabled_button(self, interaction, button):
         self.enabled = not self.enabled
         await interaction.response.edit_message(content=self.summary(), view=self)
 
-    @discord.ui.button(label="Create achievement", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Create achievement", style=discord.ButtonStyle.success, row=3)
     async def create_button(self, interaction, button):
         from .models import Achievement, AchievementReward
+
         if not self.title_value:
-            await interaction.response.send_message("https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206", ephemeral=True)
+            await interaction.response.send_message("Set the achievement title and details first.", ephemeral=True)
             return
         if self.requirement_type == "specific_balls" and not self.required_balls:
-            await interaction.response.send_message("https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206", ephemeral=True)
+            await interaction.response.send_message("For the specific-balls requirement, provide at least one required ball.", ephemeral=True)
             return
         await interaction.response.defer()
         achievement = await Achievement.objects.acreate(
-            title=self.title_value[:100], caption=self.caption_value, enabled=self.enabled,
-            requirement_type=self.requirement_type, requirement_amount=self.requirement_amount,
+            title=self.title_value[:100],
+            caption=self.caption_value,
+            enabled=self.enabled,
+            requirement_type=self.requirement_type,
+            requirement_amount=self.requirement_amount,
         )
         if self.requirement_type == "specific_balls":
             await achievement.required_balls.aset(self.required_balls)
         for kind, currency, ball, quantity in self.rewards:
             await AchievementReward.objects.acreate(
-                achievement=achievement, reward_type=kind, currency_amount=currency,
-                ball=ball, ball_amount=quantity,
+                achievement=achievement,
+                reward_type=kind,
+                currency_amount=currency,
+                ball=ball,
+                ball_amount=quantity,
             )
         for child in self.children:
             child.disabled = True
@@ -316,23 +313,19 @@ class AchievementCog(commands.Cog):
         await interaction.response.send_message(
             "Hello, if you see this, you are a fuckgin idiot hahahahah 😂😂😂😂😂😂😂😂😂😂😂😂😂😂😂 "
             "https://tenor.com/view/you-are-an-idiot-gif-17637615161490421290 "
-            "https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206 "
+            "https://www.youtube.com/watch?v=hiRacdl02w4 "
             "https://www.youtube.com/watch?v=rYDbgQGtBF8 "
             "https://www.youtube.com/watch?v=48rz8udZBmQ",
             ephemeral=True,
         )
 
-    async def _can_create_achievements(self, interaction: discord.Interaction) -> bool:
-        """Use the bot owner or the Django permissions configured in the admin panel."""
+    async def _has_permission(self, interaction: discord.Interaction, permission: str) -> bool:
         try:
             if await self.bot.is_owner(interaction.user):
                 return True
         except (AttributeError, discord.DiscordException):
             pass
 
-        # BallsDex admin-panel Discord OAuth users are linked through UserSocialAuth.
-        # Requiring the model permission means a panel administrator must explicitly
-        # grant this permission (directly or through a Django group).
         try:
             from social_django.models import UserSocialAuth
 
@@ -341,9 +334,7 @@ class AchievementCog(commands.Cog):
             ).afirst()
             if auth_link is None:
                 return False
-            return await sync_to_async(auth_link.user.has_perm)(
-                "achievements.add_achievement"
-            )
+            return await sync_to_async(auth_link.user.has_perm)(permission)
         except (ImportError, AttributeError, RuntimeError):
             return False
 
@@ -352,9 +343,9 @@ class AchievementCog(commands.Cog):
         description="Create an achievement using the admin-panel permissions.",
     )
     async def imtotallynotaddingachievements(self, interaction: discord.Interaction):
-        if not await self._can_create_achievements(interaction):
+        if not await self._has_permission(interaction, "achievements.add_achievement"):
             await interaction.response.send_message(
-                "https://tenor.com/view/verity-verity-minecraft-no-hell-no-horror-skunx-gif-17790544041060695206",
+                "You do not have permission to create achievements. Ask a bot administrator to grant the achievements add permission in the admin panel.",
                 ephemeral=True,
             )
             return
@@ -362,6 +353,47 @@ class AchievementCog(commands.Cog):
 
         view = AchievementCreatorView(self, interaction.user.id, await get_currency_name())
         await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
+
+    @app_commands.command(
+        name="awardachievement",
+        description="Give a player an achievement and its rewards.",
+    )
+    @app_commands.describe(user="The player to reward", achievement="The achievement to give")
+    async def awardachievement(self, interaction: discord.Interaction, user: discord.User, achievement: str):
+        if not await self._has_permission(interaction, "achievements.add_achievementcompletion"):
+            await interaction.response.send_message(
+                "You do not have permission to award achievements.",
+                ephemeral=True,
+            )
+            return
+        from .achievement_service import award_achievement, load_achievement
+
+        try:
+            achievement_id = int(achievement)
+        except ValueError:
+            await interaction.response.send_message("Pick an achievement from the list.", ephemeral=True)
+            return
+
+        found = await load_achievement(achievement_id)
+        if found is None:
+            await interaction.response.send_message("That achievement doesn't exist.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        given = await award_achievement(user.id, found, recipient=user)
+        if given:
+            await interaction.followup.send(f"Gave **{found.title}** to {user.mention}.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"{user.mention} already has **{found.title}**.", ephemeral=True)
+
+    @awardachievement.autocomplete("achievement")
+    async def awardachievement_autocomplete(self, interaction: discord.Interaction, current: str):
+        if not await self._has_permission(interaction, "achievements.add_achievementcompletion"):
+            return []
+        from .models import Achievement
+
+        matches = Achievement.objects.filter(title__icontains=current).order_by("id")[:25]
+        return [app_commands.Choice(name=a.title[:100], value=str(a.pk)) async for a in matches]
 
     @app_commands.command(
         name="achievements",
