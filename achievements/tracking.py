@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from .models import PlayerStat
 
 QUICK_SECONDS = 10
@@ -16,6 +18,13 @@ async def record_catch(discord_id, seconds=None, special=False):
 
     if special:
         stat.special_catches += 1
+
+    now = datetime.now(timezone.utc)
+    if stat.last_catch_at is not None:
+        gap = (now - stat.last_catch_at).total_seconds()
+        if stat.smallest_gap is None or gap < stat.smallest_gap:
+            stat.smallest_gap = gap
+    stat.last_catch_at = now
 
     if seconds is not None:
         if seconds <= QUICK_SECONDS:
