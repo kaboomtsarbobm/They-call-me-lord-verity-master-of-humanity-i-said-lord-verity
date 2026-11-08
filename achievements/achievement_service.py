@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import discord
 from asgiref.sync import sync_to_async
 from django.db.models import Count, F, Max, Min, Q
+from django.db.models.functions import Length, Lower, Substr
 
 from bd_models.models import Ball, BallInstance, Player
 
@@ -11,6 +12,13 @@ from . import ui
 from .models import Achievement, AchievementCompletion, PlayerStat
 
 log = logging.getLogger("ballsdex.packages.achievements")
+
+GUESS_KINDS = (
+    Achievement.GUESS_NAME,
+    Achievement.GUESS_CONTAINS,
+    Achievement.GUESS_LENGTH,
+    Achievement.GUESS_SHOUT,
+)
 
 
 @dataclass
@@ -32,6 +40,11 @@ class PlayerStats:
     same_server: int = 0
     same_regime: int = 0
     same_economy: int = 0
+    same_special: int = 0
+    average_balls: int = 0
+    longest_name: int = 0
+    shortest_name: object = None
+    letters: int = 0
     rarity_order: list = field(default_factory=list)
     completed: int = 0
     dex_total: int = 0
@@ -88,9 +101,32 @@ async def largest_group(discord_id, lookup):
         return 0
 
 
+async def name_lengths(discord_id):
+    try:
+        owned = BallInstance.objects.filter(player__discord_id=discord_id)
+        result = await owned.order_by().annotate(name_length=Length("ball__country")).aaggregate(
+            longest=Max("name_length"),
+            shortest=Min("name_length"),
+        )
+        return result["longest"] or 0, result["shortest"]
+    except Exception:
+        log.debug("Could not read ball name lengths", exc_info=True)
+        return 0, None
+
+
+async def count_first_letters(discord_id):
+    try:
+        owned = BallInstance.objects.filter(player__discord_id=discord_id)
+        rows = owned.order_by().annotate(first=Lower(Substr("ball__country", 1, 1))).values("first").distinct()
+        return len([row["first"] async for row in rows if row["first"] and row["first"].isalpha()])
+    except Exception:
+        log.debug("Could not count first letters", exc_info=True)
+        return 0
+
+
 async def load_stats(discord_id, kinds=None):
-    def wants(kind):
-        return kinds is None or kind in kinds
+    def wants(*names):
+        return kinds is None or any(name in kinds for name in names)
 
     owned = BallInstance.objects.filter(player__discord_id=discord_id)
     rows = owned.order_by().values("ball_id").annotate(copies=Count("id"))
@@ -106,6 +142,7 @@ async def load_stats(discord_id, kinds=None):
         min_attack=Min("attack_bonus"),
         min_health=Min("health_bonus"),
         traded=Count("id", filter=Q(trade_player__isnull=False)),
+        average_balls=Count("id", filter=Q(attack_bonus=0, health_bonus=0)),
     )
 
     tracked = await PlayerStat.objects.filter(discord_id=discord_id).afirst()
@@ -124,6 +161,7 @@ async def load_stats(discord_id, kinds=None):
         combined_bonus=extra["combined_bonus"] or 0,
         min_bonus=min(extra["min_attack"] or 0, extra["min_health"] or 0),
         traded=extra["traded"] or 0,
+        average_balls=extra["average_balls"] or 0,
     )
 
     if wants(Achievement.SPECIAL_BALLS):
@@ -139,7 +177,13 @@ async def load_stats(discord_id, kinds=None):
         stats.same_regime = await largest_group(discord_id, "ball__regime")
     if wants(Achievement.SAME_ECONOMY):
         stats.same_economy = await largest_group(discord_id, "ball__economy")
-    if wants(Achievement.RARE_BALLS):
+    if wants(Achievement.SAME_SPECIAL):
+        stats.same_special = await largest_group(discord_id, "special_id")
+    if wants(Achievement.LONG_NAME, Achievement.SHORT_NAME):
+        stats.longest_name, stats.shortest_name = await name_lengths(discord_id)
+    if wants(Achievement.ALPHABET):
+        stats.letters = await count_first_letters(discord_id)
+    if wants(Achievement.RARE_BALLS, Achievement.RAREST_SET, Achievement.COMMON_SET):
         stats.rarity_order = [
             pk async for pk in Ball.objects.filter(enabled=True).order_by("rarity").values_list("pk", flat=True)
         ]
@@ -172,9 +216,24 @@ def get_progress(achievement, stats):
         done = tracked.slowest_catch is not None and tracked.slowest_catch >= target
         return (1 if done else 0), 1
 
+    if kind == Achievement.DOUBLE_CATCH:
+        done = tracked.smallest_gap is not None and tracked.smallest_gap <= target
+        return (1 if done else 0), 1
+
+    if kind == Achievement.SHORT_NAME:
+        done = stats.shortest_name is not None and stats.shortest_name <= target
+        return (1 if done else 0), 1
+
     if kind == Achievement.RARE_BALLS:
         rarest = set(stats.rarity_order[:target])
         return (1 if rarest & set(stats.ball_counts) else 0), 1
+
+    if kind in (Achievement.RAREST_SET, Achievement.COMMON_SET):
+        order = stats.rarity_order if kind == Achievement.RAREST_SET else stats.rarity_order[::-1]
+        pool = set(order[:target])
+        if not pool:
+            return None
+        return len(pool & set(stats.ball_counts)), len(pool)
 
     if kind == Achievement.DEX_PERCENT:
         target = min(target, 100)
@@ -212,11 +271,38 @@ def get_progress(achievement, stats):
         Achievement.ACHIEVEMENTS_DONE: stats.completed,
         Achievement.SAME_REGIME: stats.same_regime,
         Achievement.SAME_ECONOMY: stats.same_economy,
+        Achievement.AVERAGE_BALL: stats.average_balls,
+        Achievement.SAME_SPECIAL: stats.same_special,
+        Achievement.LONG_NAME: stats.longest_name,
+        Achievement.ALPHABET: stats.letters,
     }.get(kind)
 
     if current is None:
         return None
     return min(max(current, 0), target), target
+
+
+def guess_matches(achievement, guess):
+    kind = achievement.requirement_type
+    text = guess.strip()
+    amount = max(achievement.requirement_amount, 1)
+
+    if kind == Achievement.GUESS_LENGTH:
+        return len(text) >= amount
+
+    if kind == Achievement.GUESS_SHOUT:
+        letters = [char for char in text if char.isalpha()]
+        return len(letters) >= amount and all(char.isupper() for char in letters)
+
+    wanted = [part.strip().lower() for part in achievement.guess_text.split(";") if part.strip()]
+    if not wanted:
+        return False
+    lowered = text.lower()
+    if kind == Achievement.GUESS_NAME:
+        return lowered in wanted
+    if kind == Achievement.GUESS_CONTAINS:
+        return any(part in lowered for part in wanted)
+    return False
 
 
 async def grant_rewards(player, achievement, currency_name):
@@ -329,6 +415,7 @@ async def check_achievements(
     interaction=None,
     bot=None,
     channel=None,
+    guess=None,
 ):
     achievements = await sync_to_async(list)(
         Achievement.objects.filter(enabled=True)
@@ -345,6 +432,8 @@ async def check_achievements(
         ).values_list("achievement_id", flat=True)
     }
     remaining = [a for a in achievements if a.pk not in done_ids]
+    if guess is None:
+        remaining = [a for a in remaining if a.requirement_type not in GUESS_KINDS]
     if not remaining:
         return
 
@@ -359,9 +448,13 @@ async def check_achievements(
             if achievement.requires_id is not None and achievement.requires_id not in done_ids:
                 continue
 
-            progress = get_progress(achievement, stats)
-            if progress is None or progress[0] < progress[1]:
-                continue
+            if achievement.requirement_type in GUESS_KINDS:
+                if not guess_matches(achievement, guess):
+                    continue
+            else:
+                progress = get_progress(achievement, stats)
+                if progress is None or progress[0] < progress[1]:
+                    continue
 
             remaining.remove(achievement)
             if not await claim_completion(achievement, player.discord_id):
