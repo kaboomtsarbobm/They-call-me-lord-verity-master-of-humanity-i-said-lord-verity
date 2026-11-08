@@ -18,6 +18,7 @@ class PlayerStats:
     tracked: object
     total: int = 0
     ball_counts: dict = field(default_factory=dict)
+    special_counts: dict = field(default_factory=dict)
     specials: int = 0
     max_attack: int = 0
     max_health: int = 0
@@ -28,6 +29,11 @@ class PlayerStats:
     traded: int = 0
     regimes: int = 0
     economies: int = 0
+    same_server: int = 0
+    same_regime: int = 0
+    same_economy: int = 0
+    rarity_order: list = field(default_factory=list)
+    completed: int = 0
     dex_total: int = 0
     money: int = 0
 
@@ -72,7 +78,20 @@ async def count_distinct_ball_field(discord_id, lookup):
         return 0
 
 
+async def largest_group(discord_id, lookup):
+    try:
+        owned = BallInstance.objects.filter(player__discord_id=discord_id).exclude(**{f"{lookup}__isnull": True})
+        rows = owned.order_by().values(lookup).annotate(copies=Count("id"))
+        return max([row["copies"] async for row in rows], default=0)
+    except Exception:
+        log.debug("Could not group balls by %s", lookup, exc_info=True)
+        return 0
+
+
 async def load_stats(discord_id, kinds=None):
+    def wants(kind):
+        return kinds is None or kind in kinds
+
     owned = BallInstance.objects.filter(player__discord_id=discord_id)
     rows = owned.order_by().values("ball_id").annotate(copies=Count("id"))
     ball_counts = {row["ball_id"]: row["copies"] async for row in rows}
@@ -107,13 +126,28 @@ async def load_stats(discord_id, kinds=None):
         traded=extra["traded"] or 0,
     )
 
-    if kinds is None or Achievement.REGIMES in kinds:
+    if wants(Achievement.SPECIAL_BALLS):
+        special_rows = owned.exclude(special__isnull=True).order_by().values("special_id").annotate(copies=Count("id"))
+        stats.special_counts = {row["special_id"]: row["copies"] async for row in special_rows}
+    if wants(Achievement.REGIMES):
         stats.regimes = await count_distinct_ball_field(discord_id, "ball__regime")
-    if kinds is None or Achievement.ECONOMIES in kinds:
+    if wants(Achievement.ECONOMIES):
         stats.economies = await count_distinct_ball_field(discord_id, "ball__economy")
-    if kinds is None or Achievement.DEX_PERCENT in kinds:
+    if wants(Achievement.SERVER_BALLS):
+        stats.same_server = await largest_group(discord_id, "server_id")
+    if wants(Achievement.SAME_REGIME):
+        stats.same_regime = await largest_group(discord_id, "ball__regime")
+    if wants(Achievement.SAME_ECONOMY):
+        stats.same_economy = await largest_group(discord_id, "ball__economy")
+    if wants(Achievement.RARE_BALLS):
+        stats.rarity_order = [
+            pk async for pk in Ball.objects.filter(enabled=True).order_by("rarity").values_list("pk", flat=True)
+        ]
+    if wants(Achievement.ACHIEVEMENTS_DONE):
+        stats.completed = await AchievementCompletion.objects.filter(discord_id=discord_id).acount()
+    if wants(Achievement.DEX_PERCENT):
         stats.dex_total = await Ball.objects.filter(enabled=True).acount()
-    if kinds is None or Achievement.MONEY in kinds:
+    if wants(Achievement.MONEY):
         stats.money = await read_money(discord_id)
     return stats
 
@@ -138,10 +172,17 @@ def get_progress(achievement, stats):
         done = tracked.slowest_catch is not None and tracked.slowest_catch >= target
         return (1 if done else 0), 1
 
+    if kind == Achievement.RARE_BALLS:
+        rarest = set(stats.rarity_order[:target])
+        return (1 if rarest & set(stats.ball_counts) else 0), 1
+
     if kind == Achievement.DEX_PERCENT:
         target = min(target, 100)
         percent = stats.unique * 100 // stats.dex_total if stats.dex_total else 0
         return min(percent, target), target
+
+    if kind == Achievement.SPECIAL_BALLS and achievement.required_special_id:
+        return min(stats.special_counts.get(achievement.required_special_id, 0), target), target
 
     current = {
         Achievement.CATCH_BALLS: stats.total,
@@ -154,8 +195,6 @@ def get_progress(achievement, stats):
         Achievement.SERVERS: stats.servers,
         Achievement.TOTAL_CATCHES: tracked.total_catches,
         Achievement.CATCH_STREAK: tracked.best_catch_streak,
-        Achievement.DAILY_STREAK: tracked.best_daily_streak,
-        Achievement.CATCHES_TODAY: tracked.best_catches_in_day,
         Achievement.WRONG_STREAK: tracked.best_wrong_streak,
         Achievement.WRONG_TOTAL: tracked.wrong_guesses,
         Achievement.SPECIAL_VARIETY: stats.special_variety,
@@ -165,9 +204,14 @@ def get_progress(achievement, stats):
         Achievement.BAD_BONUS: -stats.min_bonus,
         Achievement.REDEMPTION: tracked.best_redemption,
         Achievement.TOO_SLOW: tracked.late_attempts,
-        Achievement.ACTIVE_DAYS: tracked.active_days,
-        Achievement.WEEKEND_CATCHES: tracked.weekend_catches,
         Achievement.TRADED_BALLS: stats.traded,
+        Achievement.SPECIAL_CATCHES: tracked.special_catches,
+        Achievement.SERVER_BALLS: stats.same_server,
+        Achievement.QUICK_CATCHES: tracked.quick_catches,
+        Achievement.FIRST_TRY_CATCHES: tracked.first_try_catches,
+        Achievement.ACHIEVEMENTS_DONE: stats.completed,
+        Achievement.SAME_REGIME: stats.same_regime,
+        Achievement.SAME_ECONOMY: stats.same_economy,
     }.get(kind)
 
     if current is None:
@@ -189,8 +233,9 @@ async def grant_rewards(player, achievement, currency_name):
                     await BallInstance.objects.acreate(
                         ball=reward.ball,
                         player=player,
-                        attack_bonus=0,
-                        health_bonus=0,
+                        special=reward.special,
+                        attack_bonus=reward.attack_bonus,
+                        health_bonus=reward.health_bonus,
                     )
                 gave_ball = True
         except Exception:
@@ -210,6 +255,8 @@ async def grant_rewards(player, achievement, currency_name):
 
 
 async def notify(achievement, reward_lines, interaction, channel):
+    if not achievement.announce:
+        return
     if interaction is None and channel is None:
         return
 
@@ -229,7 +276,7 @@ async def notify(achievement, reward_lines, interaction, channel):
 
 async def load_achievement(achievement_id):
     found = await sync_to_async(list)(
-        Achievement.objects.filter(pk=achievement_id).prefetch_related("rewards__ball")
+        Achievement.objects.filter(pk=achievement_id).prefetch_related("rewards__ball", "rewards__special")
     )
     return found[0] if found else None
 
@@ -238,6 +285,30 @@ async def give_rewards(discord_id, achievement):
     player, _ = await Player.objects.aget_or_create(discord_id=discord_id)
     currency_name = await get_currency_name()
     return await grant_rewards(player, achievement, currency_name)
+
+
+async def claim_completion(achievement, discord_id):
+    if achievement.max_winners:
+        taken = await AchievementCompletion.objects.filter(achievement=achievement).acount()
+        if taken >= achievement.max_winners:
+            return False
+
+    completion, created = await AchievementCompletion.objects.aget_or_create(
+        achievement=achievement,
+        discord_id=discord_id,
+    )
+    if not created:
+        return False
+
+    if achievement.max_winners:
+        rank = await AchievementCompletion.objects.filter(
+            achievement=achievement,
+            pk__lte=completion.pk,
+        ).acount()
+        if rank > achievement.max_winners:
+            await completion.adelete()
+            return False
+    return True
 
 
 async def award_achievement(discord_id, achievement, recipient=None):
@@ -262,7 +333,7 @@ async def check_achievements(
     achievements = await sync_to_async(list)(
         Achievement.objects.filter(enabled=True)
         .exclude(requirement_type=Achievement.MANUAL)
-        .prefetch_related("required_balls", "rewards__ball")
+        .prefetch_related("required_balls", "rewards__ball", "rewards__special")
     )
     if not achievements:
         return
@@ -273,31 +344,38 @@ async def check_achievements(
             discord_id=player.discord_id
         ).values_list("achievement_id", flat=True)
     }
-    pending = [a for a in achievements if a.pk not in done_ids]
-    if not pending:
+    remaining = [a for a in achievements if a.pk not in done_ids]
+    if not remaining:
         return
 
-    kinds = {a.requirement_type for a in pending}
+    kinds = {a.requirement_type for a in remaining}
     stats = await load_stats(player.discord_id, kinds)
     currency_name = None
 
-    for achievement in pending:
-        progress = get_progress(achievement, stats)
-        if progress is None or progress[0] < progress[1]:
-            continue
+    progressed = True
+    while progressed:
+        progressed = False
+        for achievement in list(remaining):
+            if achievement.requires_id is not None and achievement.requires_id not in done_ids:
+                continue
 
-        _, created = await AchievementCompletion.objects.aget_or_create(
-            achievement=achievement,
-            discord_id=player.discord_id,
-        )
-        if not created:
-            continue
+            progress = get_progress(achievement, stats)
+            if progress is None or progress[0] < progress[1]:
+                continue
 
-        if currency_name is None:
-            currency_name = await get_currency_name()
+            remaining.remove(achievement)
+            if not await claim_completion(achievement, player.discord_id):
+                continue
 
-        reward_lines, _ = await grant_rewards(player, achievement, currency_name)
-        if reward_lines:
-            stats = await load_stats(player.discord_id, kinds)
+            done_ids.add(achievement.pk)
+            stats.completed += 1
+            progressed = True
 
-        await notify(achievement, reward_lines, interaction, channel)
+            if currency_name is None:
+                currency_name = await get_currency_name()
+
+            reward_lines, _ = await grant_rewards(player, achievement, currency_name)
+            if reward_lines:
+                stats = await load_stats(player.discord_id, kinds)
+
+            await notify(achievement, reward_lines, interaction, channel)
