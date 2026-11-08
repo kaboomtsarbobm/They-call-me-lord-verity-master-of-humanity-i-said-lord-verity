@@ -1,3 +1,5 @@
+import re
+
 from django.core.exceptions import ValidationError
 from django.db import models
 
@@ -20,8 +22,6 @@ class Achievement(models.Model):
     SERVERS = "servers"
     TOTAL_CATCHES = "total_catches"
     CATCH_STREAK = "catch_streak"
-    DAILY_STREAK = "daily_streak"
-    CATCHES_TODAY = "catches_today"
     FAST_CATCH = "fast_catch"
     WRONG_STREAK = "wrong_streak"
     WRONG_TOTAL = "wrong_total"
@@ -33,9 +33,15 @@ class Achievement(models.Model):
     SLOW_CATCH = "slow_catch"
     REDEMPTION = "redemption"
     TOO_SLOW = "too_slow"
-    ACTIVE_DAYS = "active_days"
-    WEEKEND_CATCHES = "weekend_catches"
     TRADED_BALLS = "traded_balls"
+    SPECIAL_CATCHES = "special_catches"
+    RARE_BALLS = "rare_balls"
+    SERVER_BALLS = "server_balls"
+    QUICK_CATCHES = "quick_catches"
+    FIRST_TRY_CATCHES = "first_try_catches"
+    ACHIEVEMENTS_DONE = "achievements_done"
+    SAME_REGIME = "same_regime"
+    SAME_ECONOMY = "same_economy"
 
     REQUIREMENT_TYPES = (
         (MANUAL, "Manual"),
@@ -51,8 +57,6 @@ class Achievement(models.Model):
         (SERVERS, "catch balls in different servers"),
         (TOTAL_CATCHES, "catch balls (all time)"),
         (CATCH_STREAK, "catch balls in a row without a wrong guess"),
-        (DAILY_STREAK, "catch a ball every day"),
-        (CATCHES_TODAY, "catch balls in one day"),
         (FAST_CATCH, "catch a ball fast"),
         (WRONG_STREAK, "get a name wrong in a row"),
         (WRONG_TOTAL, "get names wrong in total"),
@@ -64,9 +68,15 @@ class Achievement(models.Model):
         (SLOW_CATCH, "catch a ball slowly"),
         (REDEMPTION, "catch a ball after wrong guesses"),
         (TOO_SLOW, "be too slow to catch"),
-        (ACTIVE_DAYS, "catch balls on different days"),
-        (WEEKEND_CATCHES, "catch balls on weekends"),
         (TRADED_BALLS, "own balls from other players"),
+        (SPECIAL_CATCHES, "catch special balls (all time)"),
+        (RARE_BALLS, "own one of the rarest balls"),
+        (SERVER_BALLS, "own balls caught in the same server"),
+        (QUICK_CATCHES, "catch balls within 10 seconds"),
+        (FIRST_TRY_CATCHES, "catch balls on the first try"),
+        (ACHIEVEMENTS_DONE, "complete achievements"),
+        (SAME_REGIME, "own balls from the same regime"),
+        (SAME_ECONOMY, "own balls from the same economy"),
     )
 
     title = models.CharField(max_length=100)
@@ -86,15 +96,78 @@ class Achievement(models.Model):
         blank=True,
         related_name="required_for_achievements",
     )
+    required_special = models.ForeignKey(
+        "bd_models.Special",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="required_for_achievements",
+        help_text="Only used by the special balls type: count just this special.",
+    )
+
+    emoji = models.CharField(
+        max_length=32,
+        blank=True,
+        help_text="Shown before the title. Leave empty for the trophy.",
+    )
+    color = models.CharField(
+        max_length=7,
+        blank=True,
+        help_text="Embed color as hex, like #FFAA00. Leave empty for the default.",
+    )
+    category = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Small label shown at the bottom of the embed.",
+    )
+    sort_order = models.IntegerField(
+        default=0,
+        help_text="Lower numbers show first in /achievements.",
+    )
+    hidden = models.BooleanField(
+        default=False,
+        help_text="Players only see ??? until they complete it.",
+    )
+    announce = models.BooleanField(
+        default=True,
+        help_text="Send the completion message to the player.",
+    )
+    completion_message = models.TextField(
+        blank=True,
+        help_text="Extra text shown in the completion message.",
+    )
+    requires = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="unlocks",
+        help_text="Players must complete this achievement first.",
+    )
+    max_winners = models.PositiveIntegerField(
+        default=0,
+        help_text="Only the first players can complete it. 0 means no limit.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["id"]
+        ordering = ["sort_order", "id"]
 
     def __str__(self):
         return self.title
+
+    def clean(self):
+        if self.color and not re.fullmatch(r"#?[0-9a-fA-F]{6}", self.color.strip()):
+            raise ValidationError({"color": "Use a hex color like #FFAA00."})
+        seen = {self.pk}
+        parent = self.requires
+        while parent is not None:
+            if parent.pk in seen:
+                raise ValidationError({"requires": "That would make achievements require each other."})
+            seen.add(parent.pk)
+            parent = parent.requires
 
     def requirement_text(self):
         amount = self.requirement_amount
@@ -114,6 +187,8 @@ class Achievement(models.Model):
                 return f"Catch {amount} {balls[0]}"
             return f"Catch {amount} of each: {', '.join(balls)}"
         if kind == self.SPECIAL_BALLS:
+            if self.required_special_id:
+                return f"Own {_plural(amount, str(self.required_special) + ' ball')}"
             return f"Own {_plural(amount, 'special ball')}"
         if kind == self.DUPLICATE_BALLS:
             return f"Own {amount} copies of the same ball"
@@ -131,10 +206,6 @@ class Achievement(models.Model):
             return f"Catch {_plural(amount, 'ball')} in total"
         if kind == self.CATCH_STREAK:
             return f"Catch {_plural(amount, 'ball')} in a row without a wrong guess"
-        if kind == self.DAILY_STREAK:
-            return f"Catch a ball {_plural(amount, 'day')} in a row"
-        if kind == self.CATCHES_TODAY:
-            return f"Catch {_plural(amount, 'ball')} in one day"
         if kind == self.FAST_CATCH:
             return f"Catch a ball within {_plural(amount, 'second')} of it spawning"
         if kind == self.WRONG_STREAK:
@@ -157,12 +228,26 @@ class Achievement(models.Model):
             return f"Catch a ball right after getting it wrong {_plural(amount, 'time')} in a row"
         if kind == self.TOO_SLOW:
             return f"Be too slow to catch a ball {_plural(amount, 'time')}"
-        if kind == self.ACTIVE_DAYS:
-            return f"Catch balls on {_plural(amount, 'different day')}"
-        if kind == self.WEEKEND_CATCHES:
-            return f"Catch {_plural(amount, 'ball')} on weekends"
         if kind == self.TRADED_BALLS:
             return f"Own {_plural(amount, 'ball')} that came from other players"
+        if kind == self.SPECIAL_CATCHES:
+            return f"Catch {_plural(amount, 'special ball')} in total"
+        if kind == self.RARE_BALLS:
+            if amount <= 1:
+                return "Own the rarest ball"
+            return f"Own one of the {amount} rarest balls"
+        if kind == self.SERVER_BALLS:
+            return f"Own {_plural(amount, 'ball')} caught in the same server"
+        if kind == self.QUICK_CATCHES:
+            return f"Catch {_plural(amount, 'ball')} within 10 seconds of them spawning"
+        if kind == self.FIRST_TRY_CATCHES:
+            return f"Catch {_plural(amount, 'ball')} on the first try"
+        if kind == self.ACHIEVEMENTS_DONE:
+            return f"Complete {_plural(amount, 'achievement')}"
+        if kind == self.SAME_REGIME:
+            return f"Own {_plural(amount, 'ball')} from the same regime"
+        if kind == self.SAME_ECONOMY:
+            return f"Own {_plural(amount, 'ball')} from the same economy"
         return "Awarded manually"
 
 
@@ -196,6 +281,16 @@ class AchievementReward(models.Model):
         related_name="achievement_rewards",
     )
     ball_amount = models.PositiveIntegerField(default=1)
+    special = models.ForeignKey(
+        "bd_models.Special",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="achievement_rewards",
+        help_text="Give the ball with this special.",
+    )
+    attack_bonus = models.IntegerField(default=0, help_text="Attack bonus of the ball given, in percent.")
+    health_bonus = models.IntegerField(default=0, help_text="Health bonus of the ball given, in percent.")
 
     def __str__(self):
         return f"{self.achievement.title} reward"
@@ -226,7 +321,11 @@ class AchievementReward(models.Model):
         if self.gives_currency():
             parts.append(f"{self.currency_amount} {currency_name}")
         if self.gives_ball():
-            parts.append(f"{self.ball} x{self.ball_amount}")
+            name = f"{self.special} {self.ball}" if self.special_id else str(self.ball)
+            text = f"{name} x{self.ball_amount}"
+            if self.attack_bonus or self.health_bonus:
+                text += f" ({self.attack_bonus:+d}% ATK, {self.health_bonus:+d}% HP)"
+            parts.append(text)
         return " + ".join(parts)
 
 
@@ -260,17 +359,13 @@ class PlayerStat(models.Model):
     wrong_guesses = models.PositiveIntegerField(default=0)
     wrong_streak = models.PositiveIntegerField(default=0)
     best_wrong_streak = models.PositiveIntegerField(default=0)
-    daily_streak = models.PositiveIntegerField(default=0)
-    best_daily_streak = models.PositiveIntegerField(default=0)
-    last_catch_day = models.DateField(blank=True, null=True)
-    catches_today = models.PositiveIntegerField(default=0)
-    best_catches_in_day = models.PositiveIntegerField(default=0)
     fastest_catch = models.FloatField(blank=True, null=True)
     slowest_catch = models.FloatField(blank=True, null=True)
     best_redemption = models.PositiveIntegerField(default=0)
     late_attempts = models.PositiveIntegerField(default=0)
-    active_days = models.PositiveIntegerField(default=0)
-    weekend_catches = models.PositiveIntegerField(default=0)
+    special_catches = models.PositiveIntegerField(default=0)
+    quick_catches = models.PositiveIntegerField(default=0)
+    first_try_catches = models.PositiveIntegerField(default=0)
 
     def __str__(self):
         return f"stats for {self.discord_id}"
