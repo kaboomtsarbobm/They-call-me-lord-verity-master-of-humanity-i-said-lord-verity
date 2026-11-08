@@ -15,7 +15,12 @@ def seconds_since_spawn(view):
     return (datetime.now(timezone.utc) - created).total_seconds()
 
 
-async def after_catch(view, user, player):
+def caught_special(result):
+    ball = result[0] if isinstance(result, (tuple, list)) and result else result
+    return getattr(ball, "special_id", None) is not None
+
+
+async def after_catch(view, user, player, result=None):
     from bd_models.models import Player
 
     from .achievement_service import check_achievements
@@ -24,7 +29,7 @@ async def after_catch(view, user, player):
     if player is None:
         player, _ = await Player.objects.aget_or_create(discord_id=user.id)
 
-    await record_catch(user.id, seconds_since_spawn(view))
+    await record_catch(user.id, seconds_since_spawn(view), caught_special(result))
 
     state = _submit_state.get()
     interaction = state["interaction"] if state else None
@@ -111,7 +116,7 @@ def wrap_catch_ball(view_class):
     async def catch_ball_tracked(self, user, *args, **kwargs):
         result = await original(self, user, *args, **kwargs)
         try:
-            await after_catch(self, user, kwargs.get("player"))
+            await after_catch(self, user, kwargs.get("player"), result)
         except Exception:
             log.exception("Failed to check Verity Achievements after a catch")
         return result
