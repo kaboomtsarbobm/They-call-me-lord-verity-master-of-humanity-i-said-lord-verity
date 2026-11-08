@@ -33,33 +33,34 @@ async def after_catch(view, user, player, result=None):
 
     state = _submit_state.get()
     interaction = state["interaction"] if state else None
+    guess = state["guess"] if state else None
     if interaction is not None and interaction.user.id != user.id:
         interaction = None
 
-    await check_achievements(player, interaction=interaction)
+    await check_achievements(player, interaction=interaction, guess=guess)
 
 
-async def check_after_miss(interaction):
+async def check_after_miss(interaction, guess):
     from bd_models.models import Player
 
     from .achievement_service import check_achievements
 
     player, _ = await Player.objects.aget_or_create(discord_id=interaction.user.id)
-    await check_achievements(player, interaction=interaction)
+    await check_achievements(player, interaction=interaction, guess=guess)
 
 
-async def after_wrong_guess(interaction):
+async def after_wrong_guess(interaction, guess):
     from .tracking import record_wrong_guess
 
     await record_wrong_guess(interaction.user.id)
-    await check_after_miss(interaction)
+    await check_after_miss(interaction, guess)
 
 
-async def after_late_attempt(interaction):
+async def after_late_attempt(interaction, guess):
     from .tracking import record_late_attempt
 
     await record_late_attempt(interaction.user.id)
-    await check_after_miss(interaction)
+    await check_after_miss(interaction, guess)
 
 
 def wrap_on_submit(prompt_class):
@@ -69,7 +70,8 @@ def wrap_on_submit(prompt_class):
 
     @wraps(original)
     async def on_submit_tracked(self, interaction, *args, **kwargs):
-        state = {"interaction": interaction, "wrong": False}
+        guess = str(getattr(getattr(self, "name", None), "value", "") or "")
+        state = {"interaction": interaction, "wrong": False, "guess": guess}
         was_caught = bool(getattr(getattr(self, "view", None), "caught", False))
         token = _submit_state.set(state)
         try:
@@ -79,9 +81,9 @@ def wrap_on_submit(prompt_class):
 
         try:
             if state["wrong"]:
-                await after_wrong_guess(interaction)
+                await after_wrong_guess(interaction, guess)
             elif was_caught:
-                await after_late_attempt(interaction)
+                await after_late_attempt(interaction, guess)
         except Exception:
             log.exception("Failed to check Verity Achievements after a missed catch")
         return result
