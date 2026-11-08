@@ -42,6 +42,18 @@ class Achievement(models.Model):
     ACHIEVEMENTS_DONE = "achievements_done"
     SAME_REGIME = "same_regime"
     SAME_ECONOMY = "same_economy"
+    GUESS_NAME = "guess_name"
+    GUESS_CONTAINS = "guess_contains"
+    GUESS_LENGTH = "guess_length"
+    GUESS_SHOUT = "guess_shout"
+    AVERAGE_BALL = "average_ball"
+    SAME_SPECIAL = "same_special"
+    RAREST_SET = "rarest_set"
+    COMMON_SET = "common_set"
+    LONG_NAME = "long_name"
+    SHORT_NAME = "short_name"
+    ALPHABET = "alphabet"
+    DOUBLE_CATCH = "double_catch"
 
     REQUIREMENT_TYPES = (
         (MANUAL, "Manual"),
@@ -77,6 +89,18 @@ class Achievement(models.Model):
         (ACHIEVEMENTS_DONE, "complete achievements"),
         (SAME_REGIME, "own balls from the same regime"),
         (SAME_ECONOMY, "own balls from the same economy"),
+        (GUESS_NAME, "type a certain name as a guess"),
+        (GUESS_CONTAINS, "type a guess containing certain text"),
+        (GUESS_LENGTH, "type a very long guess"),
+        (GUESS_SHOUT, "type a guess in all caps"),
+        (AVERAGE_BALL, "own a perfectly average ball"),
+        (SAME_SPECIAL, "own balls with the same special"),
+        (RAREST_SET, "own the rarest balls"),
+        (COMMON_SET, "own the most common balls"),
+        (LONG_NAME, "own a ball with a long name"),
+        (SHORT_NAME, "own a ball with a short name"),
+        (ALPHABET, "own balls starting with different letters"),
+        (DOUBLE_CATCH, "catch two balls back to back"),
     )
 
     title = models.CharField(max_length=100)
@@ -95,6 +119,11 @@ class Achievement(models.Model):
         "bd_models.Ball",
         blank=True,
         related_name="required_for_achievements",
+    )
+    guess_text = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="For the guess types: the name or text to type. Separate alternatives with ;",
     )
     required_special = models.ForeignKey(
         "bd_models.Special",
@@ -248,6 +277,39 @@ class Achievement(models.Model):
             return f"Own {_plural(amount, 'ball')} from the same regime"
         if kind == self.SAME_ECONOMY:
             return f"Own {_plural(amount, 'ball')} from the same economy"
+        if kind in (self.GUESS_NAME, self.GUESS_CONTAINS):
+            wanted = [part.strip() for part in self.guess_text.split(";") if part.strip()]
+            if kind == self.GUESS_NAME:
+                if not wanted:
+                    return "Type a certain name as a guess"
+                if len(wanted) == 1:
+                    return f'Type "{wanted[0]}" as a guess on a ball'
+                return f"Type one of these as a guess on a ball: {', '.join(wanted)}"
+            if not wanted:
+                return "Type a guess containing certain text"
+            if len(wanted) == 1:
+                return f'Type a guess containing "{wanted[0]}"'
+            return f"Type a guess containing one of: {', '.join(wanted)}"
+        if kind == self.GUESS_LENGTH:
+            return f"Type a guess that is at least {_plural(amount, 'character')} long"
+        if kind == self.GUESS_SHOUT:
+            return f"Type a guess in ALL CAPS with at least {_plural(amount, 'letter')}"
+        if kind == self.AVERAGE_BALL:
+            return f"Own {_plural(amount, 'perfectly average ball')} (0% attack and 0% health)"
+        if kind == self.SAME_SPECIAL:
+            return f"Own {_plural(amount, 'ball')} with the same special"
+        if kind == self.RAREST_SET:
+            return "Own the rarest ball" if amount <= 1 else f"Own the {amount} rarest balls"
+        if kind == self.COMMON_SET:
+            return "Own the most common ball" if amount <= 1 else f"Own the {amount} most common balls"
+        if kind == self.LONG_NAME:
+            return f"Own a ball with a name of at least {_plural(amount, 'character')}"
+        if kind == self.SHORT_NAME:
+            return f"Own a ball with a name of {_plural(amount, 'character')} or fewer"
+        if kind == self.ALPHABET:
+            return f"Own balls starting with {_plural(amount, 'different letter')}"
+        if kind == self.DOUBLE_CATCH:
+            return f"Catch two balls within {_plural(amount, 'second')} of each other"
         return "Awarded manually"
 
 
@@ -366,6 +428,8 @@ class PlayerStat(models.Model):
     special_catches = models.PositiveIntegerField(default=0)
     quick_catches = models.PositiveIntegerField(default=0)
     first_try_catches = models.PositiveIntegerField(default=0)
+    last_catch_at = models.DateTimeField(blank=True, null=True)
+    smallest_gap = models.FloatField(blank=True, null=True)
 
     def __str__(self):
         return f"stats for {self.discord_id}"
