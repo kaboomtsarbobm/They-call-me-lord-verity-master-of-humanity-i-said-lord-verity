@@ -17,7 +17,7 @@ log = logging.getLogger("ballsdex.packages.achievements")
 
 class AchievementRewardInline(TabularInline):
     model = AchievementReward
-    fields = ("currency_amount", "ball", "ball_amount")
+    fields = ("currency_amount", "ball", "ball_amount", "special", "attack_bonus", "health_bonus")
     extra = 1
     verbose_name = "reward"
     verbose_name_plural = "Rewards (fill in money, a ball, or both)"
@@ -28,6 +28,7 @@ class AchievementAdmin(ModelAdmin):
     list_display = (
         "preview",
         "title",
+        "category",
         "requirement_summary",
         "reward_summary",
         "completed_by",
@@ -35,8 +36,8 @@ class AchievementAdmin(ModelAdmin):
     )
     list_display_links = ("preview", "title")
     list_editable = ("enabled",)
-    list_filter = ("enabled", "requirement_type")
-    search_fields = ("title", "caption")
+    list_filter = ("enabled", "hidden", "requirement_type", "category")
+    search_fields = ("title", "caption", "category")
     filter_horizontal = ("required_balls",)
     readonly_fields = ("image_preview",)
     inlines = (AchievementRewardInline,)
@@ -45,15 +46,34 @@ class AchievementAdmin(ModelAdmin):
         (
             "Requirement",
             {
-                "fields": ("requirement_type", "requirement_amount", "required_balls"),
+                "fields": ("requirement_type", "requirement_amount", "required_balls", "required_special"),
                 "description": (
                     "The amount is how many for most types. "
                     "Dex percent: 1 to 100. Attack, health and combined bonus: the minimum bonus. "
                     "Bad bonus: how far below zero. Fast catch: at most this many seconds after the spawn. "
                     "Slow catch: at least this many seconds after the spawn. Wrong guesses: how many times. "
+                    "Rare balls: how many of the rarest balls count (1 means only the rarest). "
+                    "Special balls: pick a special below to count only that one. "
                     "Specific balls: how many of each ball picked below (1 means just own each one). "
                     "Manual never completes by itself, give it from Achievement completions."
                 ),
+            },
+        ),
+        (
+            "Customize",
+            {
+                "fields": (
+                    "emoji",
+                    "color",
+                    "category",
+                    "sort_order",
+                    "hidden",
+                    "announce",
+                    "completion_message",
+                    "requires",
+                    "max_winners",
+                ),
+                "classes": ("collapse",),
             },
         ),
     )
@@ -63,7 +83,8 @@ class AchievementAdmin(ModelAdmin):
             super()
             .get_queryset(request)
             .annotate(_completed=Count("completions", distinct=True))
-            .prefetch_related("rewards__ball", "required_balls")
+            .select_related("required_special")
+            .prefetch_related("rewards__ball", "rewards__special", "required_balls")
         )
 
     @admin.display(description="")
