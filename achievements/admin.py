@@ -46,7 +46,7 @@ class AchievementAdmin(ModelAdmin):
         (
             "Requirement",
             {
-                "fields": ("requirement_type", "requirement_amount", "required_balls", "required_special"),
+                "fields": ("requirement_type", "requirement_amount", "required_balls", "required_special", "guess_text"),
                 "description": (
                     "The amount is how many for most types. "
                     "Dex percent: 1 to 100. Attack, health and combined bonus: the minimum bonus. "
@@ -54,6 +54,10 @@ class AchievementAdmin(ModelAdmin):
                     "Slow catch: at least this many seconds after the spawn. Wrong guesses: how many times. "
                     "Rare balls: how many of the rarest balls count (1 means only the rarest). "
                     "Special balls: pick a special below to count only that one. "
+                    "Guess types: Guess text is the name or text to type, with ; between options "
+                    "(the amount is the length for the long guess, and the letters for all caps). "
+                    "Short and long name: how many characters. Double catch: seconds between two catches. "
+                    "Own the rarest or most common balls: how many balls are in the set. "
                     "Specific balls: how many of each ball picked below (1 means just own each one). "
                     "Manual never completes by itself, give it from Achievement completions."
                 ),
