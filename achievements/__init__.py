@@ -1,8 +1,6 @@
 import logging
 from typing import TYPE_CHECKING
 
-from .cog import AchievementCog
-
 if TYPE_CHECKING:
     from ballsdex.core.bot import BallsDexBot
 
@@ -10,6 +8,7 @@ log = logging.getLogger("ballsdex.packages.achievements")
 
 
 async def setup(bot: "BallsDexBot"):
+    from .cog import AchievementCog
     from .catch_integration import install_catch_integration
 
     try:
