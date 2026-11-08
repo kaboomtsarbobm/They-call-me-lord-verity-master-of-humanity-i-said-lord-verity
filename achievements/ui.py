@@ -1,9 +1,3 @@
-"""Embed builders shared by the /achievements command and the completion message.
-
-This module must not import Django models at module level: it is imported when the
-package is loaded, before Django's app registry is ready.
-"""
-
 from pathlib import Path
 
 import discord
@@ -19,8 +13,17 @@ def progress_bar(current, target, width=10):
     return "▰" * filled + "▱" * (width - filled)
 
 
+def parse_color(text, default):
+    value = (text or "").strip().lstrip("#")
+    if len(value) != 6:
+        return default
+    try:
+        return discord.Color(int(value, 16))
+    except ValueError:
+        return default
+
+
 def image_file(achievement):
-    """Return a discord.File for the achievement image, or None if it can't be read."""
     if not achievement.image:
         return None
     try:
@@ -32,19 +35,35 @@ def image_file(achievement):
     return discord.File(path, filename=f"achievement_{achievement.pk}{path.suffix or '.png'}")
 
 
-def achievement_embed(achievement, *, currency_name, done, progress, number, total, completed):
-    embed = discord.Embed(
-        title=f"🏆 {achievement.title}",
-        description=achievement.caption or "No description because the person who made this didnt config it",
-        color=DONE_COLOR if done else PENDING_COLOR,
-    )
-    embed.set_author(name=f"Achievements • {completed}/{total} complete")
+def achievement_embed(achievement, *, currency_name, done, progress, number, total, completed, locked_by=None):
+    color = parse_color(achievement.color, DONE_COLOR if done else PENDING_COLOR)
+    footer = f"I WANT FREE REWARDS • Page {number}/{total}"
+    if achievement.category:
+        footer = f"{achievement.category} • {footer}"
+    author = f"Achievements • {completed}/{total} complete"
 
-    embed.add_field(
-        name="Status",
-        value="✅ Its Done." if done else "⏳ Im waitin.",
-        inline=True,
+    if achievement.hidden and not done:
+        embed = discord.Embed(title="Hidden achievement.", description="???", color=color)
+        embed.set_author(name=author)
+        embed.add_field(name="Status", value="⏳ Im waitin.", inline=False)
+        embed.set_footer(text=footer)
+        return embed, None
+
+    embed = discord.Embed(
+        title=f"{achievement.emoji or '🏆'} {achievement.title}",
+        description=achievement.caption or "No description.",
+        color=color,
     )
+    embed.set_author(name=author)
+
+    if done:
+        status = "✅ Its Done."
+    elif locked_by:
+        status = f"🔒 Complete **{locked_by}** first."
+    else:
+        status = "⏳ Im waitin."
+    embed.add_field(name="Status", value=status, inline=True)
+
     if progress is not None:
         current, target = progress
         if done:
@@ -57,11 +76,15 @@ def achievement_embed(achievement, *, currency_name, done, progress, number, tot
 
     embed.add_field(name="Goal", value=achievement.requirement_text(), inline=False)
 
+    if achievement.max_winners:
+        claimed = getattr(achievement, "claimed", 0)
+        embed.add_field(name="Limited", value=f"{claimed}/{achievement.max_winners} claimed", inline=False)
+
     rewards = [text for text in (r.describe(currency_name) for r in achievement.rewards.all()) if text]
     if rewards:
-        embed.add_field(name="Rewards:", value="\n".join(rewards)[:1024], inline=False)
+        embed.add_field(name="Reward:", value="\n".join(rewards)[:1024], inline=False)
 
-    embed.set_footer(text=f"I WANT FREE REWARDS • Page {number}/{total}")
+    embed.set_footer(text=footer)
 
     file = image_file(achievement)
     if file:
@@ -73,10 +96,12 @@ def completion_embed(achievement, reward_lines):
     description = f"**{achievement.title}**"
     if achievement.caption:
         description += f"\n{achievement.caption}"
+    if achievement.completion_message:
+        description += f"\n\n{achievement.completion_message}"
     embed = discord.Embed(
-        title="🎉 ACHIEVEMENT COMPLETE",
+        title=f"{achievement.emoji or '🎉'} ACHIEVEMENT COMPLETE",
         description=description,
-        color=DONE_COLOR,
+        color=parse_color(achievement.color, DONE_COLOR),
     )
     embed.add_field(
         name="Rewards Given:",
